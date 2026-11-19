@@ -1,0 +1,62 @@
+name: Mirror dotnet SDK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SDK_VERSION: 10.0.404
+  TAG: dotnet-sdk-10.0.404
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 下載全部平台
+        run: |
+          mkdir -p out
+          PAGE=https://dotnet.microsoft.com/en-us/download/dotnet/thank-you
+          DIRECT=https://builds.dotnet.microsoft.com/dotnet/Sdk/${SDK_VERSION}
+
+          # 格式：頁面 slug | 實際檔名
+          while IFS='|' read -r slug file; do
+            echo "=== $file"
+            url=$(curl -fsSL "$PAGE/sdk-${SDK_VERSION}-${slug}" \
+                  | grep -oE "https://[^\"' ]+${file}" | head -1 || true)
+            [ -z "$url" ] && url="$DIRECT/$file" && echo "頁面解析失敗，改用備用網址"
+            echo "URL: $url"
+            curl -fL --retry 3 -o "out/$file" "$url"
+            # 防止下載到 HTML 錯誤頁
+            [ "$(stat -c%s "out/$file")" -gt 50000000 ] || { echo "檔案過小，疑似失敗"; exit 1; }
+          done <<EOF
+          linux-x64-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-x64.tar.gz
+          linux-arm64-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-arm64.tar.gz
+          linux-arm32-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-arm.tar.gz
+          linux-x64-alpine-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-musl-x64.tar.gz
+          linux-arm64-alpine-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-musl-arm64.tar.gz
+          linux-arm32-alpine-binaries-targz|dotnet-sdk-${SDK_VERSION}-linux-musl-arm.tar.gz
+          macos-arm64-binaries-targz|dotnet-sdk-${SDK_VERSION}-osx-arm64.tar.gz
+          macos-x64-binaries-targz|dotnet-sdk-${SDK_VERSION}-osx-x64.tar.gz
+          windows-x64-binaries-zip|dotnet-sdk-${SDK_VERSION}-win-x64.zip
+          windows-x86-binaries-zip|dotnet-sdk-${SDK_VERSION}-win-x86.zip
+          windows-arm64-binaries-zip|dotnet-sdk-${SDK_VERSION}-win-arm64.zip
+          EOF
+
+          ls -lh out
+
+      - name: 產生校驗碼
+        run: |
+          cd out
+          sha512sum * > SHA512SUMS.txt
+
+      - name: 發佈到 Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title ".NET SDK $SDK_VERSION" \
+              --notes "Mirror of official .NET SDK $SDK_VERSION (all platforms)"
+          gh release upload "$TAG" out/* --clobber
